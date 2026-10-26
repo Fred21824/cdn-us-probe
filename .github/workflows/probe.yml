@@ -1,0 +1,41 @@
+name: us-cdn-probe
+on: workflow_dispatch
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix:
+        variant: [fast-a, throttled, fast-b]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 20 }
+      - name: where am I
+        run: |
+          curl -s https://ipinfo.io/json | grep -E '"(ip|city|region|country|org)"' || true
+          curl -s -o /dev/null -w 'cf-trace %{http_code}\n' https://www.cloudflare.com/cdn-cgi/trace
+          curl -s https://www.cloudflare.com/cdn-cgi/trace | grep -E 'colo|loc' || true
+      - name: install playwright
+        run: npm i playwright@1.48.2 >/dev/null && npx playwright install --with-deps chromium >/dev/null
+      - name: origin RTT (forced miss on a missing key)
+        run: |
+          for i in 1 2 3; do curl -s -o /dev/null -w 'miss404 %{http_code} ttfb=%{time_starttransfer} total=%{time_total}\n' "https://www.betswgplay.top/__probe_missing_${RANDOM}${i}.txt" -D - | grep -iE 'miss404|x-cache|x-amz-cf-pop' | tr '\n' ' '; echo; done
+      - name: curl full download of main bundle (x2)
+        run: |
+          JS=$(curl -s --compressed https://www.betswgplay.top/ | grep -oE '/assets/index-[A-Za-z0-9_-]+\.js' | head -1)
+          echo "main=$JS"
+          for i in 1 2; do curl -s -H 'Accept-Encoding: br, gzip' -o /dev/null -D h.txt -w "main-js size=%{size_download} ttfb=%{time_starttransfer} total=%{time_total} speed=%{speed_download}\n" "https://www.betswgplay.top$JS"; grep -iE 'x-cache|x-amz-cf-pop|content-encoding' h.txt | tr -d '\r' | tr '\n' ' '; echo; done
+      - name: browser load
+        env:
+          LABEL: ${{ matrix.variant }}
+          THROTTLE: ${{ matrix.variant == 'throttled' && '1' || '0' }}
+        run: node probe.mjs
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: result-${{ matrix.variant }}
+          path: |
+            result-*.json
+            shot-*.png
